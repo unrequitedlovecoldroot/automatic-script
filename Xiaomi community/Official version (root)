@@ -1,74 +1,66 @@
 #!/system/bin/sh
-# ============================================================
-# 小米社區自動簽到 - 正式版 (Root + Termux + cron + 原生通知)
+# 小米社區自動簽到 - Root Termux 版 (正式版)
 # 功能：
-#   1. 每天 23:59:35 啟動，00:00:00 準時簽到
-#   2. 使用百分比點擊，避免不同解析度失敗
-#   3. 成功判斷：簽到後 UNLOCK 按鈕消失
-#   4. 日誌：完整日誌 + 簡潔日誌
-#   5. Android 原生通知 (不用 Termux:API)
-#   6. 自動加入 cron 排程
-# ============================================================
+# 1. 第一次執行時 → 自動安裝到 cron，之後每天 23:59 自動執行
+# 2. 每天 23:59 啟動，等到 00:00 點擊簽到
+# 3. 支援百分比點擊，適配不同解析度
+# 4. 簽到完成後判斷「橘色按鈕是否消失」
+# 5. 發送 Android 系統通知 (不用 Termux:API)
 
 PKG="com.mi.global.bbs"
 LOGFILE="/data/local/tmp/signin_log.txt"
-SIMPLE_LOG="/data/local/tmp/signin_simple.txt"
-CRON_JOB="59 23 * * * su -c /data/local/tmp/signin.sh"
+SCRIPT_PATH="/data/local/tmp/signin.sh"
 
-# 📝 日誌輸出
-log() {
-  MSG="$1"
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] (正式版) $MSG" | tee -a $LOGFILE
-}
-
-# 🔔 Android 原生通知
-notify() {
-  MSG="$1"
-  cmd notification post -S bigtext -t "小米簽到" "signin_result" "$MSG"
-}
-
-# 📌 Tap 點擊（百分比換算）
+# 取得螢幕解析度
 SIZE=$(wm size | awk '{print $3}')
 WIDTH=${SIZE%x*}
 HEIGHT=${SIZE#*x}
+
+# 日誌函式
+log() {
+  MSG="$1"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $MSG" | tee -a $LOGFILE
+}
+
+# 點擊百分比座標
 tap_percent() {
   X=$(echo "$WIDTH * $1 / 100" | bc)
   Y=$(echo "$HEIGHT * $2 / 100" | bc)
   input tap ${X%.*} ${Y%.*}
 }
 
-# 🔍 判斷畫面文字
+# 判斷畫面上是否存在指定文字
 check_text() {
   uiautomator dump >/dev/null 2>&1
   grep -q "$1" /sdcard/window_dump.xml
 }
 
-# ============================================================
-# 🛠️ 自動排程設定
-# ============================================================
-setup_cron() {
-  if ! command -v crond >/dev/null 2>&1; then
-    log "⚠️ 尚未安裝 cronie，請先執行：pkg install cronie"
-    return
-  fi
+# Android 系統通知
+notify() {
+  MSG="$1"
+  cmd notification post -S bigtext -t "小米簽到" "signin_result" "$MSG"
+}
 
-  sv-enable crond >/dev/null 2>&1 || log "ℹ️ 請確保 crond 已啟動"
-
-  crontab -l 2>/dev/null | grep -q "signin.sh"
+# --- 自動安裝到 cron ---
+install_cron() {
+  CRON_JOB="59 23 * * * sh $SCRIPT_PATH"
+  # 檢查是否已存在排程
+  crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH"
   if [ $? -ne 0 ]; then
     (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
-    log "✅ 已加入自動排程：每天 23:59 執行"
-  else
-    log "ℹ️ 排程已存在，跳過新增"
+    log "🕒 已將簽到腳本加入 cron，每天 23:59 自動執行"
   fi
 }
 
-# ============================================================
-# 🕛 主流程
-# ============================================================
-setup_cron
+# 先確保有 cron
+pkg install -y cronie >/dev/null 2>&1
+sv-enable crond >/dev/null 2>&1
+install_cron
 
-# 等待 23:59:35
+# --- 簽到流程 ---
+log "▶️ 正式版自動簽到流程啟動"
+
+# 等到 23:59:35（提早打開 App）
 while true; do
   NOW=$(date +%H:%M:%S)
   if [ "$NOW" = "23:59:35" ]; then
@@ -76,16 +68,15 @@ while true; do
   fi
   sleep 0.5
 done
-log "▶️ (正式版) 簽到流程啟動"
 
-# 打開 App
+# 關閉並重新打開 App
 am force-stop $PKG
 sleep 1
 monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 sleep 5
 log "📱 打開 App 完成"
 
-# 處理彈窗
+# 處理 "No Thanks" 彈窗
 if check_text "No Thanks"; then
   tap_percent 49.0 65.1
   log "👉 點擊 'No Thanks'"
@@ -99,9 +90,11 @@ sleep 1
 
 tap_percent 43.1 79.6
 log "✅ 點擊 BTN_2 → 已停在 UNLOCK 前"
+sleep 2   # 等待 2 秒，確保畫面載入完成
 
-# 等到 00:00:00 狂點
 log "🕛 等待 00:00:00"
+
+# 等到午夜
 while true; do
   NOW=$(date +%H:%M:%S)
   if [ "$NOW" = "00:00:00" ]; then
@@ -110,31 +103,31 @@ while true; do
   sleep 0.1
 done
 
+# 連點簽到按鈕
 for i in $(seq 1 5); do
   tap_percent 52.4 92.7
   usleep 50000
 done
-log "🎯 (正式版) 已完成 5 次點擊"
+log "🎯 00:00:00 已完成 5 次簽到點擊"
 
 # 00:00:01 補點一次
 while true; do
   NOW=$(date +%H:%M:%S)
   if [ "$NOW" = "00:00:01" ]; then
     tap_percent 52.4 92.7
-    log "🛡️ (正式版) 補點 1 次"
+    log "🛡️ 00:00:01 補點 1 次"
     break
   fi
   sleep 0.1
 done
 
-# ✅ 判斷是否成功（依據：UNLOCK 按鈕消失）
-sleep 2
-if ! check_text "UNLOCK"; then
-  RESULT="✅ 成功"
+# 判斷是否成功（橘色按鈕消失）
+if check_text "UNLOCK"; then
+  log "❌ 簽到失敗，橘色按鈕仍存在"
+  notify "❌ 簽到失敗，橘色按鈕仍存在"
 else
-  RESULT="❌ 失敗（橘色按鈕仍存在）"
+  log "✅ 簽到成功，橘色按鈕已消失"
+  notify "✅ 簽到成功"
 fi
 
-log "🏁 (正式版) 簽到完成 → $RESULT"
-echo "$(date '+%Y-%m-%d') $RESULT" >> $SIMPLE_LOG
-notify "$RESULT"
+log "🏁 正式版簽到流程完成"

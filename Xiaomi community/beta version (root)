@@ -1,88 +1,83 @@
 #!/system/bin/sh
-# ============================================================
-# 小米社區自動簽到 - 測試版 (Root + Termux + 原生通知)
+# 小米社區自動簽到 - Root Termux 版 (測試版)
 # 功能：
-#   1. 手動執行，立即測試簽到
-#   2. 使用百分比點擊
-#   3. 成功判斷：簽到後 UNLOCK 按鈕消失
-#   4. 日誌：完整日誌 + 簡潔日誌
-#   5. Android 原生通知 (不用 Termux:API)
-# ============================================================
+# 1. 手動執行 → 立即簽到（方便測試）
+# 2. 支援百分比點擊
+# 3. 簽到完成後判斷「橘色按鈕是否消失」
+# 4. 發送 Android 系統通知 (不用 Termux:API)
 
 PKG="com.mi.global.bbs"
-LOGFILE="/data/local/tmp/signin_log_test.txt"
-SIMPLE_LOG="/data/local/tmp/signin_simple_test.txt"
+LOGFILE="/data/local/tmp/signin_test_log.txt"
 
-# 📝 日誌
-log() {
-  MSG="$1"
-  echo "[$(date '+%Y-%m-%d %H:%M:%S')] (測試版) $MSG" | tee -a $LOGFILE
-}
-
-# 🔔 Android 原生通知
-notify() {
-  MSG="$1"
-  cmd notification post -S bigtext -t "小米簽到測試版" "signin_test" "$MSG"
-}
-
-# 📌 Tap 點擊（百分比換算）
+# 取得螢幕解析度
 SIZE=$(wm size | awk '{print $3}')
 WIDTH=${SIZE%x*}
 HEIGHT=${SIZE#*x}
+
+# 日誌函式
+log() {
+  MSG="$1"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $MSG" | tee -a $LOGFILE
+}
+
+# 點擊百分比座標
 tap_percent() {
   X=$(echo "$WIDTH * $1 / 100" | bc)
   Y=$(echo "$HEIGHT * $2 / 100" | bc)
   input tap ${X%.*} ${Y%.*}
 }
 
-# 🔍 判斷畫面文字
+# 判斷畫面上是否存在指定文字
 check_text() {
   uiautomator dump >/dev/null 2>&1
   grep -q "$1" /sdcard/window_dump.xml
 }
 
-# ============================================================
-# 🚀 測試版立即啟動（不加 cron，不等時間）
-# ============================================================
-log "▶️ (測試版) 簽到流程啟動"
+# Android 系統通知
+notify() {
+  MSG="$1"
+  cmd notification post -S bigtext -t "小米簽到 (測試版)" "signin_test" "$MSG"
+}
 
+log "▶️ 測試版自動簽到流程啟動"
+
+# 關閉並重新打開 App
 am force-stop $PKG
 sleep 1
 monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 sleep 5
 log "📱 打開 App 完成"
 
+# 處理 "No Thanks" 彈窗
 if check_text "No Thanks"; then
   tap_percent 49.0 65.1
   log "👉 點擊 'No Thanks'"
   sleep 1
 fi
 
+# 進入簽到頁
 tap_percent 77.9 95.8
 log "✅ 點擊 BTN_1"
 sleep 1
 
 tap_percent 43.1 79.6
 log "✅ 點擊 BTN_2 → 已停在 UNLOCK 前"
+sleep 2   # 等待 2 秒，確保畫面載入完成
 
-# 直接點擊
+# 立即簽到
 for i in $(seq 1 5); do
   tap_percent 52.4 92.7
   usleep 50000
 done
-log "🎯 (測試版) 已完成 5 次點擊"
+log "🎯 已完成 5 次簽到點擊"
 
-tap_percent 52.4 92.7
-log "🛡️ (測試版) 補點 1 次"
-
-# ✅ 判斷是否成功（依據：UNLOCK 按鈕消失）
-sleep 2
-if ! check_text "UNLOCK"; then
-  RESULT="✅ 成功"
+# 判斷是否成功（橘色按鈕消失）
+if check_text "UNLOCK"; then
+  log "❌ 簽到失敗，橘色按鈕仍存在"
+  notify "❌ 簽到失敗，橘色按鈕仍存在"
 else
-  RESULT="❌ 失敗（橘色按鈕仍存在）"
+  log "✅ 簽到成功，橘色按鈕已消失"
+  notify "✅ 簽到成功"
 fi
 
-log "🏁 (測試版) 簽到完成 → $RESULT"
-echo "$(date '+%Y-%m-%d') $RESULT" >> $SIMPLE_LOG
-notify "$RESULT"
+log "🏁 測試版簽到流程完成"

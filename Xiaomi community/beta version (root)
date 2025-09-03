@@ -1,0 +1,97 @@
+#!/system/bin/sh
+# ============================================================
+# 小米社區自動簽到 - 測試版
+# 功能：
+#   1. 立即執行（不等待時間）
+#   2. 點擊簽到按鈕（使用螢幕百分比座標）
+#   3. 成功 / 失敗 判斷（簽到按鈕消失 or 顯示成功）
+#   4. 完整日誌（詳細紀錄） + 簡易日誌（每天一行）
+#   5. 成功 / 失敗 通知提醒
+#   6. 手動測試用（不自動排程）
+# ============================================================
+
+PKG="com.mi.global.bbs"                          # 小米社區 App 套件名
+LOGFILE="/sdcard/signin_log_test.txt"            # 測試版完整日誌
+SIMPLE_LOG="/sdcard/signin_simple_test.txt"      # 測試版簡易日誌
+
+# 📝 日誌函式
+log() {
+  MSG="$1"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] (測試版) $MSG" | tee -a $LOGFILE
+}
+
+# 🔔 通知函式
+notify() {
+  MSG="$1"
+  am broadcast -a com.android.systemui.toast \
+    --es toast_text "$MSG" >/dev/null 2>&1
+}
+
+# 📌 Tap 點擊（螢幕百分比）
+SIZE=$(wm size | awk '{print $3}')
+WIDTH=${SIZE%x*}
+HEIGHT=${SIZE#*x}
+tap_percent() {
+  X=$(echo "$WIDTH * $1 / 100" | bc)
+  Y=$(echo "$HEIGHT * $2 / 100" | bc)
+  input tap ${X%.*} ${Y%.*}
+}
+
+# 🔍 判斷畫面文字
+check_text() {
+  uiautomator dump >/dev/null 2>&1
+  grep -q "$1" /sdcard/window_dump.xml
+}
+
+# ============================================================
+# 🚀 測試版：立即開始，不等時間
+# ============================================================
+log "▶️ (測試版) 簽到流程啟動"
+
+# 重啟 App
+am force-stop $PKG
+sleep 1
+monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+sleep 5
+log "📱 打開 App 完成"
+
+# 如果有 "No Thanks" 彈窗就點掉
+if check_text "No Thanks"; then
+  tap_percent 49.0 65.1
+  log "👉 點擊 'No Thanks'"
+  sleep 1
+fi
+
+# 進入簽到頁
+tap_percent 77.9 95.8
+log "✅ 點擊 BTN_1"
+sleep 1
+
+tap_percent 43.1 79.6
+log "✅ 點擊 BTN_2 → 已停在 UNLOCK 前"
+
+# 直接狂點 UNLOCK（不用等 00:00）
+for i in $(seq 1 5); do
+  tap_percent 52.4 92.7
+  usleep 50000
+done
+log "🎯 (測試版) 已完成 5 次簽到點擊"
+
+# 補點一次
+tap_percent 52.4 92.7
+log "🛡️ (測試版) 補點 1 次"
+
+# ============================================================
+# 🎯 成功 / 失敗 判斷
+# ============================================================
+sleep 2
+if ! check_text "UNLOCK" || check_text "簽到成功" || check_text "已簽到"; then
+  RESULT="✅ 成功"
+else
+  RESULT="❌ 失敗"
+fi
+
+# 📌 最終紀錄
+log "🏁 (測試版) 簽到流程完成 → $RESULT"
+echo "$(date '+%Y-%m-%d') $RESULT" >> $SIMPLE_LOG
+notify "小米簽到測試版：$RESULT"

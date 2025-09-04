@@ -1,0 +1,158 @@
+#!/system/bin/sh
+# ============================================================
+# 小米社區自動簽到 - Termux 無 ROOT 正式版
+#
+# 【功能清單】
+# 1. 第一次執行 → 自動安裝 cron 任務 (每天 23:59 執行腳本)
+# 2. 提前在 23:59:35 打開小米社區 App
+# 3. 午夜 00:00 自動點擊簽到 (5+1 次)
+# 4. 自動處理「No Thanks」彈窗
+# 5. 判斷簽到是否成功 (UNLOCK 按鈕是否消失)
+# 6. 發送通知 + 紀錄 log
+# 7. 如果是腳本喚醒螢幕 → 等 30 秒後自動關閉
+# ============================================================
+
+PKG="com.mi.global.bbs"   # 小米社區套件名稱
+LOGFILE="$HOME/signin_log.txt"  # log 檔案
+SCRIPT_PATH="$HOME/signin.sh"   # 腳本自身路徑
+
+SIZE=$(wm size | awk '{print $3}')
+WIDTH=${SIZE%x*}
+HEIGHT=${SIZE#*x}
+SCREEN_OPENED_BY_SCRIPT=0
+
+# ======== 函式區 ========
+
+log() {
+  MSG="$1"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $MSG" | tee -a $LOGFILE
+}
+
+tap_percent() {
+  X=$(echo "$WIDTH * $1 / 100" | bc)
+  Y=$(echo "$HEIGHT * $2 / 100" | bc)
+  input tap ${X%.*} ${Y%.*}
+}
+
+check_text() {
+  uiautomator dump >/dev/null 2>&1
+  grep -q "$1" /sdcard/window_dump.xml
+}
+
+notify() {
+  MSG="$1"
+  termux-notification --title "小米簽到" --content "$MSG"
+}
+
+is_screen_on() {
+  dumpsys power | grep -q "Display Power: state=ON"
+}
+
+turn_on_screen() {
+  input keyevent KEYCODE_WAKEUP
+  log "💡 螢幕已開啟"
+}
+
+turn_off_screen() {
+  input keyevent KEYCODE_SLEEP
+  log "🌙 螢幕已關閉"
+}
+
+install_cron() {
+  CRON_JOB="59 23 * * * sh $SCRIPT_PATH"
+  crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH"
+  if [ $? -ne 0 ]; then
+    (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
+    log "🕒 已將腳本加入 cron (每天 23:59 自動執行)"
+  fi
+}
+
+# 安裝 cronie + 啟動 crond
+pkg install -y cronie >/dev/null 2>&1
+sv-enable crond >/dev/null 2>&1
+install_cron
+
+# ======== 主流程 ========
+log "▶️ 正式版簽到流程啟動"
+
+# 等到 23:59:35 才繼續
+while true; do
+  NOW=$(date +%H:%M:%S)
+  if [ "$NOW" = "23:59:35" ]; then
+    break
+  fi
+  sleep 0.5
+done
+
+# 確保螢幕亮
+if is_screen_on; then
+  log "📱 螢幕已亮 → 保持現狀"
+else
+  log "📱 螢幕關閉 → 幫你打開"
+  turn_on_screen
+  SCREEN_OPENED_BY_SCRIPT=1
+fi
+
+# 啟動 APP
+am force-stop $PKG
+sleep 1
+monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+sleep 5
+log "📲 App 已啟動"
+
+# 檢查彈窗
+if check_text "No Thanks"; then
+  tap_percent 49.0 65.1
+  log "👉 已點擊 'No Thanks'"
+  sleep 1
+fi
+
+# 進入簽到頁面
+tap_percent 77.9 95.8
+log "✅ 點擊首頁底部按鈕 (BTN_1)"
+sleep 1
+
+tap_percent 43.1 79.6
+log "✅ 點擊簽到入口 (BTN_2)"
+sleep 2
+
+# 等到 00:00:00
+while true; do
+  NOW=$(date +%H:%M:%S)
+  if [ "$NOW" = "00:00:00" ]; then
+    break
+  fi
+  sleep 0.1
+done
+
+# 簽到點擊
+for i in $(seq 1 5); do
+  tap_percent 52.4 92.7
+  usleep 50000
+done
+log "🎯 已完成 5 次簽到點擊"
+
+# 補點一次
+sleep 1
+tap_percent 52.4 92.7
+log "🎯 00:00:01 補點 1 次"
+
+# 確認結果
+if check_text "UNLOCK"; then
+  log "❌ 簽到失敗 (UNLOCK 按鈕仍存在)"
+  notify "❌ 簽到失敗"
+else
+  log "✅ 簽到成功 (UNLOCK 按鈕消失)"
+  notify "✅ 簽到成功"
+fi
+
+# 收尾：螢幕控制
+if [ $SCREEN_OPENED_BY_SCRIPT -eq 1 ]; then
+  log "⌛ 等待 30 秒後自動關螢幕"
+  sleep 30
+  turn_off_screen
+else
+  log "🔆 螢幕原本是亮的 → 不關閉"
+fi
+
+log "🏁 正式版簽到流程完成"

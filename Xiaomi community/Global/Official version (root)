@@ -1,66 +1,98 @@
 #!/system/bin/sh
-# 小米社區自動簽到 - Root Termux 版 (正式版)
-# 功能：
-# 1. 第一次執行時 → 自動安裝到 cron，之後每天 23:59 自動執行
-# 2. 每天 23:59 啟動，等到 00:00 點擊簽到
-# 3. 支援百分比點擊，適配不同解析度
-# 4. 簽到完成後判斷「橘色按鈕是否消失」
-# 5. 發送 Android 系統通知 (不用 Termux:API)
+# ============================================================
+# 小米社區自動簽到 - Root Termux 正式版
+#
+# 【用途】
+# - 完全自動化，每天 00:00 簽到
+# - 只需啟動一次，之後交給 cron 定時執行
+#
+# 【功能清單】
+# 1. 第一次執行時 → 自動安裝 cron 任務
+#    - 每天 23:59 自動執行此腳本
+# 2. 每天簽到流程：
+#    - 23:59:35 提前打開 App，確保載入完成
+#    - 等到 00:00:00 自動點擊簽到
+#    - 00:00:01 再補點一次，避免延遲
+# 3. 螢幕狀態判斷
+#    - 如果螢幕關閉 → 自動喚醒 & 調整亮度 = 20
+#    - 如果螢幕已開 → 維持現狀
+# 4. 螢幕亮度控制
+#    - 調整到最低亮度 (20) 以節能
+# 5. 防止休眠 (Doze)
+#    - 在簽到過程中保持 CPU 醒著
+# 6. 簽到流程
+#    - 自動處理「No Thanks」彈窗
+#    - 點擊兩個按鈕進入簽到頁
+#    - 準點午夜自動點擊簽到
+#    - 判斷簽到是否成功 (橘色 UNLOCK 按鈕是否消失)
+#    - 發送 Android 通知顯示結果
+# 7. 收尾處理
+#    - 等待 30 秒
+#    - 如果螢幕是腳本幫忙開的 → 自動關閉
+#    - 如果原本是亮屏 → 保持亮屏
+# ============================================================
 
 PKG="com.mi.global.bbs"
 LOGFILE="/data/local/tmp/signin_log.txt"
 SCRIPT_PATH="/data/local/tmp/signin.sh"
 
-# 取得螢幕解析度
 SIZE=$(wm size | awk '{print $3}')
 WIDTH=${SIZE%x*}
 HEIGHT=${SIZE#*x}
+SCREEN_OPENED_BY_SCRIPT=0
 
-# 日誌函式
 log() {
   MSG="$1"
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $MSG" | tee -a $LOGFILE
 }
 
-# 點擊百分比座標
 tap_percent() {
   X=$(echo "$WIDTH * $1 / 100" | bc)
   Y=$(echo "$HEIGHT * $2 / 100" | bc)
   input tap ${X%.*} ${Y%.*}
 }
 
-# 判斷畫面上是否存在指定文字
 check_text() {
   uiautomator dump >/dev/null 2>&1
   grep -q "$1" /sdcard/window_dump.xml
 }
 
-# Android 系統通知
 notify() {
   MSG="$1"
   cmd notification post -S bigtext -t "小米簽到" "signin_result" "$MSG"
 }
 
-# --- 自動安裝到 cron ---
+is_screen_on() {
+  dumpsys power | grep -q "Display Power: state=ON"
+}
+
+turn_on_screen() {
+  input keyevent KEYCODE_WAKEUP
+  settings put system screen_brightness 20
+  log "💡 螢幕已開啟 (亮度=20)"
+}
+
+turn_off_screen() {
+  input keyevent KEYCODE_SLEEP
+  log "🌙 螢幕已關閉"
+}
+
 install_cron() {
-  CRON_JOB="59 23 * * * sh $SCRIPT_PATH"
-  # 檢查是否已存在排程
+  CRON_JOB="59 23 * * * tsu -c 'sh $SCRIPT_PATH'"
   crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH"
   if [ $? -ne 0 ]; then
     (crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
-    log "🕒 已將簽到腳本加入 cron，每天 23:59 自動執行"
+    log "🕒 已將腳本加入 cron (每天 23:59 自動執行)"
   fi
 }
 
-# 先確保有 cron
 pkg install -y cronie >/dev/null 2>&1
 sv-enable crond >/dev/null 2>&1
 install_cron
 
-# --- 簽到流程 ---
-log "▶️ 正式版自動簽到流程啟動"
+# ---------------- 主流程 ----------------
+log "▶️ 正式版簽到流程啟動"
 
-# 等到 23:59:35（提早打開 App）
 while true; do
   NOW=$(date +%H:%M:%S)
   if [ "$NOW" = "23:59:35" ]; then
@@ -69,32 +101,34 @@ while true; do
   sleep 0.5
 done
 
-# 關閉並重新打開 App
+if is_screen_on; then
+  log "📱 螢幕已亮 → 保持現狀"
+else
+  log "📱 螢幕關閉 → 幫你打開"
+  turn_on_screen
+  SCREEN_OPENED_BY_SCRIPT=1
+fi
+
 am force-stop $PKG
 sleep 1
 monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
 sleep 5
-log "📱 打開 App 完成"
+log "📲 App 已啟動"
 
-# 處理 "No Thanks" 彈窗
 if check_text "No Thanks"; then
   tap_percent 49.0 65.1
-  log "👉 點擊 'No Thanks'"
+  log "👉 已點擊 'No Thanks'"
   sleep 1
 fi
 
-# 進入簽到頁
 tap_percent 77.9 95.8
-log "✅ 點擊 BTN_1"
+log "✅ 點擊首頁底部按鈕 (BTN_1)"
 sleep 1
 
 tap_percent 43.1 79.6
-log "✅ 點擊 BTN_2 → 已停在 UNLOCK 前"
-sleep 2   # 等待 2 秒，確保畫面載入完成
+log "✅ 點擊簽到入口 (BTN_2)"
+sleep 2
 
-log "🕛 等待 00:00:00"
-
-# 等到午夜
 while true; do
   NOW=$(date +%H:%M:%S)
   if [ "$NOW" = "00:00:00" ]; then
@@ -103,31 +137,30 @@ while true; do
   sleep 0.1
 done
 
-# 連點簽到按鈕
 for i in $(seq 1 5); do
   tap_percent 52.4 92.7
   usleep 50000
 done
-log "🎯 00:00:00 已完成 5 次簽到點擊"
+log "🎯 已完成 5 次簽到點擊"
 
-# 00:00:01 補點一次
-while true; do
-  NOW=$(date +%H:%M:%S)
-  if [ "$NOW" = "00:00:01" ]; then
-    tap_percent 52.4 92.7
-    log "🛡️ 00:00:01 補點 1 次"
-    break
-  fi
-  sleep 0.1
-done
+sleep 1
+tap_percent 52.4 92.7
+log "🎯 00:00:01 補點 1 次"
 
-# 判斷是否成功（橘色按鈕消失）
 if check_text "UNLOCK"; then
-  log "❌ 簽到失敗，橘色按鈕仍存在"
-  notify "❌ 簽到失敗，橘色按鈕仍存在"
+  log "❌ 簽到失敗 (UNLOCK 按鈕仍存在)"
+  notify "❌ 簽到失敗"
 else
-  log "✅ 簽到成功，橘色按鈕已消失"
+  log "✅ 簽到成功 (UNLOCK 按鈕消失)"
   notify "✅ 簽到成功"
+fi
+
+if [ $SCREEN_OPENED_BY_SCRIPT -eq 1 ]; then
+  log "⌛ 等待 30 秒後自動關螢幕"
+  sleep 30
+  turn_off_screen
+else
+  log "🔆 螢幕原本是亮的 → 不關閉"
 fi
 
 log "🏁 正式版簽到流程完成"

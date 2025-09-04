@@ -1,0 +1,129 @@
+#!/system/bin/sh
+# ============================================================
+# 小米社區自動簽到 - Termux 無 ROOT 測試版
+#
+# 【功能清單】
+# 1. 啟動時檢查螢幕 → 如果關閉，直接喚醒
+# 2. 強制關閉並重新啟動小米社區 APP
+# 3. 處理「No Thanks」彈窗
+# 4. 點擊底部按鈕 (BTN_1)，再點擊簽到入口 (BTN_2)
+# 5. 自動連點簽到按鈕 5 次（避免失敗）
+# 6. 判斷畫面是否有「UNLOCK」字樣 → 判斷簽到成功或失敗
+# 7. 發送通知 + 紀錄 log
+# 8. 如果是腳本喚醒的螢幕 → 等 30 秒自動關閉
+# ============================================================
+
+PKG="com.mi.global.bbs"   # 小米社區套件名稱
+LOGFILE="$HOME/signin_test_log.txt"  # 測試版 log 檔案路徑
+
+# 取得螢幕解析度（寬 / 高）
+SIZE=$(wm size | awk '{print $3}')
+WIDTH=${SIZE%x*}
+HEIGHT=${SIZE#*x}
+SCREEN_OPENED_BY_SCRIPT=0
+
+# ======== 函式區 ========
+
+# 輸出 log
+log() {
+  MSG="$1"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $MSG" | tee -a $LOGFILE
+}
+
+# 依照螢幕百分比點擊
+tap_percent() {
+  X=$(echo "$WIDTH * $1 / 100" | bc)
+  Y=$(echo "$HEIGHT * $2 / 100" | bc)
+  input tap ${X%.*} ${Y%.*}
+}
+
+# 判斷畫面文字
+check_text() {
+  uiautomator dump >/dev/null 2>&1
+  grep -q "$1" /sdcard/window_dump.xml
+}
+
+# 發送通知
+notify() {
+  MSG="$1"
+  termux-notification --title "小米簽到 (測試版)" --content "$MSG"
+}
+
+# 確認螢幕是否亮
+is_screen_on() {
+  dumpsys power | grep -q "Display Power: state=ON"
+}
+
+# 開螢幕
+turn_on_screen() {
+  input keyevent KEYCODE_WAKEUP
+  log "💡 螢幕已開啟"
+}
+
+# 關螢幕
+turn_off_screen() {
+  input keyevent KEYCODE_SLEEP
+  log "🌙 螢幕已關閉"
+}
+
+# ======== 主流程 ========
+log "▶️ 測試版簽到流程啟動"
+
+# 螢幕判斷
+if is_screen_on; then
+  log "📱 螢幕已亮 → 保持現狀"
+else
+  log "📱 螢幕關閉 → 幫你打開"
+  turn_on_screen
+  SCREEN_OPENED_BY_SCRIPT=1
+fi
+
+# 啟動 APP
+am force-stop $PKG
+sleep 1
+monkey -p $PKG -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+sleep 5
+log "📲 App 已啟動"
+
+# 檢查彈窗
+if check_text "No Thanks"; then
+  tap_percent 49.0 65.1
+  log "👉 已點擊 'No Thanks'"
+  sleep 1
+fi
+
+# 進入簽到頁面
+tap_percent 77.9 95.8
+log "✅ 點擊首頁底部按鈕 (BTN_1)"
+sleep 1
+
+tap_percent 43.1 79.6
+log "✅ 點擊簽到入口 (BTN_2)"
+sleep 2
+
+# 簽到點擊
+for i in $(seq 1 5); do
+  tap_percent 52.4 92.7
+  usleep 50000
+done
+log "🎯 已完成 5 次簽到點擊"
+
+# 確認結果
+if check_text "UNLOCK"; then
+  log "❌ 簽到失敗 (UNLOCK 按鈕仍存在)"
+  notify "❌ 簽到失敗"
+else
+  log "✅ 簽到成功 (UNLOCK 按鈕消失)"
+  notify "✅ 簽到成功"
+fi
+
+# 收尾：螢幕控制
+if [ $SCREEN_OPENED_BY_SCRIPT -eq 1 ]; then
+  log "⌛ 等待 30 秒後自動關螢幕"
+  sleep 30
+  turn_off_screen
+else
+  log "🔆 螢幕原本是亮的 → 不關閉"
+fi
+
+log "🏁 測試版簽到流程完成"
